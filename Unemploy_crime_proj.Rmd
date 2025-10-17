@@ -1,0 +1,1464 @@
+---
+title: "Unemployment and Crime in the U.S. : Exploring State-Level Predictive Patterns"
+output: html_document
+date: "2025-03-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data load and processing
+
+### 1. Load needed libraries
+
+```{r, message= FALSE}
+library(dplyr)
+library(readr)
+```
+
+### 2. Read the .names File (Extract Column Names)
+
+```{r}
+# Read the .names file
+names_path <- "/Users/feinipek/Downloads/communities+and+crime/communities.names"
+
+# Read all lines from the file
+names_lines <- readLines(names_path)
+
+# Extract column names (Look for lines that start with "@attribute")
+column_names <- names_lines[grep("@attribute", names_lines)]
+column_names <- gsub("@attribute ", "", column_names)  # Remove prefix
+column_names <- gsub(" .*", "", column_names)  # Keep only the column name
+```
+
+### 3. Read the .data File
+
+```{r}
+# Read the dataset, handling missing values (marked as "?")
+data_path <- "/Users/feinipek/Downloads/communities+and+crime/communities.data"
+
+crime_data <- read.csv(data_path, header = FALSE, na.strings = "?", sep = ",")
+```
+
+### 4. Assign Column Names
+
+```{r}
+# Assign extracted column names
+colnames(crime_data) <- column_names
+```
+
+### 5. Handle Missing Values (we remove columns with >50% missing values)
+
+And impute the data. After removing the column with >50% NA's, there is only 1 NA left and we imputed it with the mean
+
+```{r}
+
+# Compute the total number of rows
+num_rows <- nrow(crime_data)
+
+# Remove columns where more than 50% of the values are missing
+crime_data <- crime_data %>%
+  select(where(~ sum(is.na(.)) < 0.5 * num_rows))  # Use `num_rows` instead of `n()`
+
+# Impute missing values (optional)
+crime_data <- crime_data %>%
+  mutate(across(where(is.numeric), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .)))
+
+```
+
+
+#### This data contains 127 attributes, and after the above process, we are left with 104. Now, we wil subset only variables that we might find relevant to the question.
+
+Suppose: Q: Do employment rates predict crime levels in different U.S. states?
+
+**Education:**
+
+- PctLess9thGrade (Percentage with less than 9th-grade education)
+- PctNotHSGrad (Percentage who did not graduate high school)
+- PctBSorMore (Percentage with a bachelor's degree or more)
+
+Lower education levels correlate with higher crime rates, as they limit job opportunities and increase the likelihood of engaging in illicit activities (Becker, 1968; Lochner & Moretti, 2004).
+
+Higher education levels are associated with lower crime rates, as they provide stable employment and economic security.
+
+**Employment:**
+
+- PctUnemployed (Unemployment rate)
+- PctEmploy (Employment rate) 
+
+A high unemployment rate can increase crime due to economic distress and fewer legitimate opportunities (Freeman, 1999; Raphael & Winter-Ebmer, 2001).
+A high employment rate generally lowers crime by improving economic stability.
+
+**Other Socioeconomic Factors (Control Variables):**
+
+- State
+- medIncome (Median income)
+- perCapInc (Per capita income)
+- PctFam2Par (Percentage of two-parent families)
+- PctPopUnderPov (Percentage of population under poverty)
+
+Higher income levels generally reduce crime by increasing financial security (Grogger, 1998; Levitt, 2001).
+Family structure affects crime single-parent households are linked to higher youth crime rates due to reduced supervision (Sampson & Laub, 1993).
+Poverty is one of the strongest predictors of crime (Wilson, 1987; Hsieh & Pugh, 1993).
+
+**Dependent Variable (Crime Outcome):**
+
+- ViolentCrimesPerPop (Violent crimes per 100,000 population)
+
+```{r}
+selected_vars <- c("state", "PctLess9thGrade", "PctNotHSGrad", "PctBSorMore", 
+                   "PctUnemployed", "PctEmploy", "medIncome", "perCapInc",
+                   "PctFam2Par", "PctPopUnderPov", "ViolentCrimesPerPop")
+
+crime_sub <- crime_data %>% select(all_of(selected_vars))
+
+crime_sub$state <- as.character(crime_sub$state)
+```
+
+This selection leads us to 1994 observations with 11 variables. 
+
+#### Scaling (if needed)
+
+```{r}
+#crime_sub <- crime_sub %>%
+#  mutate(across(where(is.numeric), scale))
+```
+
+#### EDA
+
+1. Crime_rate
+
+```{r}
+library(ggplot2)
+library(ggtext)
+```
+
+
+```{r}
+ggplot(crime_sub, aes(x = ViolentCrimesPerPop)) +
+  geom_histogram(binwidth = 0.1, fill = "maroon", color = "black", alpha = 0.7) +
+  ggtitle("G1.1: Distribution of Violent Crimes Per Population") +
+  xlab("Crime Rate") + 
+  ylab("Count") +
+  theme(
+    plot.caption =
+      ggtext::element_textbox(
+        width = unit(1, "npc"),
+        hjust = 0, vjust = 1,
+        halign = 0
+      ))+
+  labs(caption = "Note: This histogram shows the distribution of violent crimes per population in various communities. The crime rate ranges from 0 to 1, with a higher concentration of communities having lower crime rates. The plot indicates that violent crime rates are relatively skewed, with fewer communities exhibiting higher crime rates.")
+
+```
+
+```{r}
+crime_state <- crime_data %>%
+  group_by(state) %>%
+  summarise(avg_crime = mean(ViolentCrimesPerPop, na.rm = TRUE))
+
+ggplot(crime_state, aes(x = reorder(state, avg_crime), y = avg_crime)) +
+  geom_bar(stat = "identity", fill = "purple") +
+  coord_flip() +
+  ggtitle("G1.2: Average Violent Crime Rate by State") +
+  xlab("State") + ylab("Average Crime Rate") +
+  theme(
+    plot.caption =
+      ggtext::element_textbox(
+        width = unit(1, "npc"),
+        hjust = 0, vjust = 1,
+        halign = 0
+      ))+
+  labs(caption = "Note: This bar chart displays the average violent crime rate by state (by number). The states are ranked from lowest to highest based on their average violent crime rates. The x-axis represents the crime rate, while the y-axis lists the states. The highest crime rate is concentrated in a few states, while most states have relatively low average violent crime rates.")
+```
+
+2. Unemployment rate
+
+```{r}
+ggplot(crime_sub, aes(x = "", y = PctUnemployed)) +
+  geom_boxplot(fill = "gold") +
+  ggtitle("G1.3: Unemployment Rate Distribution")+
+  theme(
+    plot.caption =
+      ggtext::element_textbox(
+        width = unit(1, "npc"),
+        hjust = 0, vjust = 1,
+        halign = 0
+      ))+
+  labs(caption = "Note: This bar chart displays the average violent crime rate by state. The states are ranked from lowest to highest based on their average violent crime rates. The x-axis represents the crime rate, while the y-axis lists the states. The highest crime rate is concentrated in a few states, while most states have relatively low average violent crime rates.")
+```
+
+```{r}
+ggplot(crime_sub, aes(x = PctUnemployed, y = ViolentCrimesPerPop)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", color = "red") +
+  ggtitle("G1.4: Unemployment Rate vs Crime Rate") +
+  xlab("Unemployment Rate") + ylab("Violent Crimes Per Population")+
+  theme(
+    plot.caption =
+      ggtext::element_textbox(
+        width = unit(1, "npc"),
+        hjust = 0, vjust = 0.8,
+        halign = 0
+      ))+
+  labs(caption = "Note: This scatterplot illustrates the relationship between the unemployment rate and the violent crime rate per population across communities. Each point represents a community, with the x-axis showing the unemployment rate and the y-axis showing the violent crime rate. The red regression line suggests a positive correlation, indicating that communities with higher unemployment rates tend to have higher violent crime rates. However, the spread of points suggests variability in this relationship.")
+```
+
+```{r}
+
+# Boxplot: Violent Crime Rate vs. Education Level
+ggplot(crime_subset, aes(x = PctUnemployed, y = ViolentCrimesPerPop)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(title = "Distribution of Violent Crime Rate by State",
+       x = "State",
+       y = "Violent Crime Rate") +
+  theme_minimal()
+```
+
+2. Education vs crime
+
+```{r}
+ggplot(crime_sub, aes(x = "", y = PctBSorMore)) +
+  geom_boxplot(fill = "cornflowerblue") +
+  ggtitle("Percentage of Population with Bachelor's Degree or More")
+```
+
+```{r}
+
+ggplot(crime_sub, aes(x = PctBSorMore, y = ViolentCrimesPerPop)) +
+  geom_point(alpha = 0.5, color = "black") +
+  geom_smooth(method = "lm", color = "red") +
+  ggtitle("Education (Bachelor’s or More) vs Crime Rate") +
+  xlab("Pct with Bachelor's Degree or More") + ylab("Violent Crimes Per Population")
+```
+
+Relationships b/w variables
+```{r}
+# Compute correlation matrix
+cor_matrix <- cor(crime_sub[-1])
+
+# Visualize the correlation matrix
+library(ggcorrplot)
+ggcorrplot(cor_matrix, lab = FALSE, title = "Feature Correlations")
+```
+
+
+
+```{r}
+summary(crime_sub)
+```
+
+#### PCA 
+
+```{r}
+
+# Scree Plot (Variance Explained) with Caption
+fviz_eig(pca_result, addlabels = TRUE, ylim = c(0, 100)) +
+  ggtitle("G2.1: Scree Plot of Principal Components") +  # Optional title
+  theme(
+    plot.caption =
+      ggtext::element_textbox(
+        width = unit(1, "npc"),
+        hjust = 0, vjust = 1,
+        halign = 0
+      ))+
+  labs(caption = "This scree plot displays the percentage of explained variance for each principal component in a principal component analysis (PCA). The first principal component explains the largest proportion of variance (66.7%), with subsequent components contributing progressively less. The sharp decline in variance suggests that only the first few components capture most of the information, indicating an 'elbow' point that can guide dimensionality reduction.")
+
+```
+
+```{r, message = FALSE}
+library(ggplot2)
+library(factoextra)
+
+# Select only predictor variables for PCA
+predictor_vars <- c("PctLess9thGrade", "PctBSorMore", 
+                    "PctUnemployed", "PctEmploy", "perCapInc",
+                    "PctFam2Par", "PctPopUnderPov")
+
+pca_data <- crime_sub[, predictor_vars]  # Extract predictor variables
+pca_result <- prcomp(pca_data, center = TRUE, scale. = TRUE)  # Run PCA
+
+# Scree Plot (Variance Explained)
+fviz_eig(pca_result, addlabels = TRUE, ylim = c(0, 100))
+
+```
+
+The scree plot indicates that the first principal component (PC1) explains 69.4% of the total variance in the predictor variables, suggesting that a single underlying factor captures most of the variability in education, employment, and socioeconomic indicators. The second principal component (PC2) accounts for an additional 10%, while subsequent components contribute progressively less, with PC3 explaining 7.7% and others dropping below 5%. This steep decline in variance, forming an elbow at PC1, suggests that one or two principal components capture the majority of the dataset’s structure. However, since PCA is not required for prediction, and most models perform better with raw variables, we will proceed using the original predictors rather than transformed principal components. Nonetheless, the high variance captured by PC1 indicates that strong underlying patterns exist in the data, reinforcing the relevance of our selected socioeconomic predictors in explaining crime rates.
+
+```{r}
+cor_vars <- c("PctLess9thGrade", "PctNotHSGrad", "PctBSorMore", 
+                    "PctUnemployed", "PctEmploy", "medIncome", "perCapInc",
+                    "PctFam2Par", "PctPopUnderPov", "ViolentCrimesPerPop")
+crime_subset2 <- crime_data %>% select(all_of(cor_vars))
+```
+
+```{r}
+cor(crime_subset2)
+```
+
+Key Insights from Correlation with Crime (ViolentCrimesPerPop)
+
+Positive Correlations (Increase in X → Increase in Crime)
+
+- PctNotHSGrad (0.48): Higher percentage of people without a high school degree is associated with higher crime.
+- PctUnemployed (0.50): Higher unemployment rate is linked to higher crime levels.
+- PctPopUnderPov (0.52): Higher poverty rates correspond to more violent crime.
+
+Negative Correlations (Increase in X → Decrease in Crime)
+
+- PctBSorMore (-0.31): Higher rates of bachelor’s degrees correspond to lower crime.
+- PctEmploy (-0.33): Higher employment is linked to lower crime.
+- medIncome (-0.42) & perCapInc (-0.35): Higher income reduces crime.
+- PctFam2Par (-0.71): Two-parent families show the strongest negative correlation with crime, suggesting strong family structures are a major protective factor.
+
+Multicollinearity:
+
+- High correlations among predictors (above |0.7|) can cause multicollinearity, leading to unstable regression coefficients.
+
+Problematic cases:
+
+- PctLess9thGrade vs. PctNotHSGrad (0.94): These two are almost the same measure.
+- medIncome vs. perCapInc (0.89): These capture similar economic factors.
+- PctUnemployed vs. PctPopUnderPov (0.77): Unemployment and poverty strongly overlap.
+- PctNotHSGrad vs. PctBSorMore (-0.76): Inversely related; using both may be redundant.
+
+
+#### OLS
+
+```{r}
+library(car)
+vif_values <- vif(lm(ViolentCrimesPerPop ~ ., data = crime_sub))
+print(vif_values)
+```
+
+Severe Multicollinearity:
+
+- PctNotHSGrad (35.14) : Extremely high multicollinearity. Likely correlated with PctLess9thGrade and PctBSorMore.
+- PctLess9thGrade (19.70) - Also very high, meaning it shares too much variance with other education-related variables.
+
+Moderate Multicollinearity:
+
+- medIncome (13.63) and perCapInc (12.32): These two likely capture similar economic effects.
+- PctPopUnderPov (10.29) : Strong correlation with income-related variables.
+
+Low to Acceptable Multicollinearity:
+
+- PctUnemployed (5.42) and PctEmploy (3.52) - Some correlation but manageable.
+- PctBSorMore (8.97) - Moderate but could be tolerated.
+
+Drop PctNotHSGrad or PctLess9thGrade
+
+Since both measure low education levels, keep one and drop the other.
+
+Suggestion: Keep PctLess9thGrade (lower VIF) and drop PctNotHSGrad
+
+Drop Either medIncome or perCapInc
+
+These two are highly correlated.
+Suggestion: Keep perCapInc (more precise) and drop medIncome
+
+```{r}
+# Drop the variables PctNotHSGrad and medIncome
+crime_sub <- crime_sub %>% 
+  select(-PctNotHSGrad, -medIncome)
+```
+
+```{r}
+vif_values <- vif(lm(ViolentCrimesPerPop ~ ., data = crime_sub))
+print(vif_values)
+```
+
+## 0. Data splitting
+
+```{r, message = FALSE}
+# Load necessary library
+library(caret)
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Create a 70-30 split
+train_index <- createDataPartition(crime_sub$state, p = 0.7, list = FALSE)
+
+# Subset the data
+crime_subset <- crime_sub[train_index, ]
+crime_subset_test <- crime_sub[-train_index, ]
+
+# Check dimensions
+dim(crime_subset)
+dim(crime_subset_test)
+
+```
+
+
+## 1. Train OLS (as a baseline model)
+To do this, we will perform a stepwise regression, where violentcrimesperpop is the response variable and all the remaining variables as the predictors. the selection will be done in both directions.
+
+```{r, include= FALSE}
+stepwise_model <- step(lm(ViolentCrimesPerPop ~ ., data = crime_subset), direction = "both")
+summary(stepwise_model)
+```
+
+```{r}
+ols_model <- lm(ViolentCrimesPerPop ~ state + PctLess9thGrade + 
+                  PctUnemployed + PctEmploy + perCapInc + PctFam2Par,
+                  data = crime_subset)
+summary(ols_model)
+```
+
+```{r}
+library(sjPlot)
+```
+
+```{r}
+tab_model(ols_model)
+```
+
+
+From running this, using BIC, we obtained this model: 
+ViolentCrimesPerPop ~ state + PctLess9thGrade + PctUnemployed + PctEmploy + perCapInc + PctFam2Par
+
+```{r}
+par(mfrow = c(1,2))  # Set plotting layout to 1 row, 2 columns
+
+plot(ols_model, which = 1)  # Residuals vs Fitted
+plot(ols_model, which = 2)  # Q-Q Plot
+
+# Right-align the title
+mtext("G3.1: OLS Diagnostic Plot", outer = TRUE, line = -2, cex.main = 1.5, font = 2)  
+
+```
+
+
+Now, looking at the plot diagnostics, we observe the following: 
+
+- Residuals vs fitted plot: This plot checks for non-linearity and heteroscedasticity (changing variance). The red line shows a slight curvature, suggesting non-linearity—the relationship between predictors and crime rates might not be fully captured by a linear model. The residuals also show heteroscedasticity (spread increases at higher fitted values), indicating possible unequal variance that could be addressed with transformations like log or Box-Cox.
+
+- QQ Plot (Top-right): This plot checks if residuals follow a normal distribution. The heavy right tail (positive residuals at the upper end) suggests that some observations have much higher-than-expected crime rates. A transformation (e.g., log transformation of ViolentCrimesPerPop) might help improve normality.
+
+```{r}
+crime_subset$ViolentCrimesPerPop_shifted <- crime_subset$ViolentCrimesPerPop + 0.01
+
+library(MASS)
+boxcox(lm(ViolentCrimesPerPop_shifted ~ state + PctLess9thGrade + 
+                  PctUnemployed + PctEmploy + perCapInc + PctFam2Par,
+                  data = crime_subset))
+```
+
+
+We observe the above line really close to 0, so this suggest log transformation on y.
+This gives us the following OLS result: 
+
+```{r}
+crime_subset$log_crime <- log(crime_subset$ViolentCrimesPerPop + 1)  # Avoid log(0)
+
+logOLS <- lm(log_crime ~ state + PctLess9thGrade + 
+                  PctUnemployed + PctEmploy + perCapInc + PctFam2Par,
+                  data = crime_subset)
+
+summary(logOLS)
+
+```
+With slightly improved R-squared and adjusted R squared from the baseline model.
+However, from the diagnostics plot, we still observe some nonlinearity and deviation from normally distributed assumption. We address this in the next step by fitting polynomial models.
+For now, we want to calculate the MSE to see the model's performance.
+
+We next will fit this on the testing data and see the resulting MSE.
+
+```{r}
+# Compute Train MSE
+train_predictions <- predict(logOLS, newdata = crime_subset)  # Predict on training data
+train_mse <- mean((crime_subset$ViolentCrimesPerPop - train_predictions)^2)  # MSE formula
+
+# Print Train MSE
+print(train_mse)
+```
+
+
+```{r}
+# Make predictions on the test dataset
+predictions_logOLS <- predict(logOLS, newdata = crime_subset_test)
+crime_subset_test$log_ViolentCrimesPerPop <- log(crime_subset_test$ViolentCrimesPerPop + 1) # Avoid log(0)
+
+# Compute Mean Squared Error (MSE)
+mse_logOLS <- mean((crime_subset_test$log_ViolentCrimesPerPop - predictions_logOLS)^2)
+
+# Print MSE
+print(mse_logOLS)
+
+```
+
+```{r}
+tab_model(logOLS)
+```
+
+## 2. Polynomials
+
+After consdering the diagnostic plot from the OLS model, we observe that there is nonlinearity pattern in the model. Hence, we consider the polynomial function.
+
+Let's first recall our previous selected predictors, which are: PctLess9thGrade, PctUnemployed, PctEmploy, perCapInc, and PctFam2Par. We will plot each of them against the response variable to see the potential nonlinar relationship that exists.
+
+```{r}
+# Load required libraries
+library(ggplot2)
+
+# Define the numerical variables to examine
+numerical_vars <- c("PctLess9thGrade", "PctUnemployed", "PctEmploy", "perCapInc", "PctFam2Par")
+
+# Create scatter plots with LOWESS smoothing
+par(mfrow = c(2, 3))  # Set up a 2-row, 3-column layout
+
+for (var in numerical_vars) {
+  plot(crime_subset[[var]], crime_subset$ViolentCrimesPerPop,
+       main = paste(var, "vs ViolentCrimesPerPop"),
+       xlab = var, ylab = "ViolentCrimesPerPop", pch = 19, col = rgb(0, 0, 1, 0.5))
+  
+  # Add a LOWESS smoothing line to detect nonlinearity
+  lines(lowess(crime_subset[[var]], crime_subset$ViolentCrimesPerPop), col = "red", lwd = 2)
+}
+
+# Reset plotting layout
+par(mfrow = c(1, 1))
+
+```
+
+
+
+```{r}
+
+# Define numerical variables to examine
+numerical_vars <- c("PctLess9thGrade", "PctUnemployed", "PctEmploy", 
+                    "perCapInc", "PctFam2Par")
+
+# Create a list to store plots
+plot_list <- list()
+
+# Generate scatter plots with LOWESS smoothing
+for (var in numerical_vars) {
+  p <- ggplot(crime_subset, aes_string(x = var, y = "ViolentCrimesPerPop")) +
+    geom_point(color = "blue", alpha = 0.5) +  # Scatter plot
+    geom_smooth(method = "loess", color = "red", se = FALSE) +  # LOWESS smoothing
+    labs(title = paste(var, "vs Crime Rate"), x = var, y = "Violent Crimes Per Pop") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 10, face = "bold", hjust = 0.5),  # Adjust title size & center it
+      axis.title.x = element_text(size = 9),  # Adjust x-axis label size
+      axis.title.y = element_text(size = 9)   # Adjust y-axis label size
+    )
+  
+  plot_list[[var]] <- p  # Store plot in list
+}
+
+# Arrange plots in a grid (2 rows, 3 columns) with extra bottom space
+grid.arrange(
+  grobs = plot_list, 
+  nrow = 2, 
+  ncol = 3,top = textGrob(
+    "G3.2: Scatterplot of Variables vs Crime Rate", 
+    gp = gpar(fontsize = 12, fontface = "bold")
+  ),
+  bottom = textGrob(
+  "Note: These scatter plots illustrate the relationships between various socioeconomic factors and violent crime rates per population. 
+   The blue dots represent individual communities, while the red LOWESS smoothing lines reveal trends. 
+   Some variables, such as unemployment and lack of education, show a positive association with crime, whereas income and two-parent families 
+   exhibit a negative relationship. Notably, several variables, including employment and income, display nonlinear associations, 
+   suggesting that the relationship between socioeconomic status and crime is more complex than a simple linear trend.",
+    gp = gpar(fontsize = 10), hjust = 0, x = 0
+  )
+)
+
+```
+
+- PctLess9thGrade vs. ViolentCrimesPerPop: There is a slight positive trend, meaning areas with a higher percentage of people without a 9th-grade education tend to have more violent crimes. However, the relationship is somewhat dispersed, indicating weak predictive power.
+
+- PctUnemployed vs. ViolentCrimesPerPop: A positive nonlinear relationship is visible, suggesting that higher unemployment rates correspond to higher crime rates. The increase is steeper at lower unemployment rates and flattens at higher levels.
+
+- PctEmploy vs. ViolentCrimesPerPop: The trend appears nonlinear and slightly negative: as employment rates increase, violent crime rates tend to decrease. However, the relationship is not perfectly linear, and there might be diminishing effects.
+
+- perCapInc vs. ViolentCrimesPerPop: A strong negative trend is visible: higher per capita income is associated with lower violent crime. The relationship is nonlinear, suggesting that crime rates decrease more steeply at lower income levels.
+
+- PctFam2Par vs. ViolentCrimesPerPop: A clear negative relationship: a higher percentage of two-parent families strongly correlates with lower crime rates. The relationship appears nonlinear, with the most significant decline in crime at lower levels of PctFam2Par.
+
+PctUnemployed, PctEmploy, perCapInc, and PctFam2Par show strong nonlinear relationships with crime, justifying polynomial transformations.
+A polynomial regression model (quadratic or cubic terms) could help capture these trends.
+
+```{r}
+ggplot(crime_subset, aes(x = PctLess9thGrade, y = ViolentCrimesPerPop)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red") +
+  ggtitle("Unemployment Rate vs Crime Rate")
+```
+
+```{r}
+# Load necessary library
+# library(caret)
+
+# Fit a polynomial regression model (quadratic and cubic terms)
+poly_model <- lm(ViolentCrimesPerPop ~ state+ 
+                   poly(PctLess9thGrade, 2) + 
+                   poly(PctUnemployed, 2) + 
+                   poly(PctEmploy, 2) + 
+                   poly(perCapInc, 3) + 
+                   poly(PctFam2Par, 3), 
+                 data = crime_subset)
+
+# Print model summary
+summary(poly_model)
+
+```
+
+```{r}
+tab_model(poly_model)
+```
+
+```{r}
+boxcox(lm(ViolentCrimesPerPop_shifted ~ state+ 
+                   poly(PctLess9thGrade, 2) + 
+                   poly(PctUnemployed, 2) + 
+                   poly(PctEmploy, 2) + 
+                   poly(perCapInc, 3) + 
+                   poly(PctFam2Par, 3), 
+                 data = crime_subset))
+```
+
+A log transformation might also be appropriate for this
+
+```{r}
+# Fit a polynomial regression model (quadratic and cubic terms)
+poly_model_log <- lm(log_crime ~ state+ 
+                   poly(PctLess9thGrade, 2) + 
+                   poly(PctUnemployed, 2) + 
+                   poly(PctEmploy, 2) + 
+                   poly(perCapInc, 3) + 
+                   poly(PctFam2Par, 3), 
+                 data = crime_subset)
+
+# Print model summary
+summary(poly_model_log)
+```
+
+```{r}
+par(mfrow= c(2,2))
+plot(poly_model_log)
+```
+
+```{r}
+# Compute Train MSE
+train_predictions2 <- predict(poly_model_log, newdata = crime_subset)  # Predict on training data
+train_mse2 <- mean((crime_subset$log_ViolentCrimesPerPop - train_predictions2)^2)  # MSE formula
+
+# Print Train MSE
+print(train_mse2)
+```
+
+Improved R^2 and adjusted R^2
+
+Let's look at the MSE: 
+
+```{r}
+# Make predictions on the test dataset
+predictions_polylog <- predict(poly_model_log, newdata = crime_subset_test)
+#crime_subset_test$log_ViolentCrimesPerPop <- log(crime_subset_test$ViolentCrimesPerPop + 1) # Avoid log(0)
+
+# Compute Mean Squared Error (MSE)
+mse_polylog <- mean((crime_subset_test$log_ViolentCrimesPerPop - predictions_polylog)^2)
+
+# Print MSE
+print(mse_polylog)
+
+```
+
+the MSE decreased, but still quite close. Additionally, the model diagnostic itself is still indicating some violation of the assumption as the fitted vs residual model still show the existence of nonlinear relationship.
+
+```{r}
+tab_model(poly_model_log)
+```
+
+## 3. Step function
+
+Now, We will try OLS with step function as helps capture nonlinear relationships while avoiding overfitting.
+
+The New Binning Approach
+Compute global bin breakpoints using quantiles from the combined dataset (train + test).
+
+This ensures that the same bins are applied in both crime_subset_test and crime_subset.
+The formula probs = seq(0, 1, length.out = b + 1) ensures equal bin widths.
+Apply cut() with predefined breaks:
+
+Instead of letting cut() decide different bin edges for training and test data separately, we manually set breakpoints based on both datasets.
+The argument include.lowest = TRUE makes sure that the smallest values are included.
+
+```{r}
+colnames(crime_subset)[colnames(crime_subset) == "log_crime"] <- "log_ViolentCrimesPerPop"
+```
+
+```{r}
+# Function to find the optimal number of bins using cross-validation
+find_optimal_bins <- function(breaks_list, train_data, test_data) {
+  mse_results <- data.frame(Bins = integer(), MSE = numeric())
+
+  for (b in breaks_list) {
+    # Compute global breakpoints using full dataset
+    breaks_pctLess9thGrade <- quantile(c(train_data$PctLess9thGrade, test_data$PctLess9thGrade), 
+                                       probs = seq(0, 1, length.out = b + 1), na.rm = TRUE)
+    breaks_pctUnemployed <- quantile(c(train_data$PctUnemployed, test_data$PctUnemployed), 
+                                     probs = seq(0, 1, length.out = b + 1), na.rm = TRUE)
+    breaks_pctEmploy <- quantile(c(train_data$PctEmploy, test_data$PctEmploy), 
+                                 probs = seq(0, 1, length.out = b + 1), na.rm = TRUE)
+    breaks_perCapInc <- quantile(c(train_data$perCapInc, test_data$perCapInc), 
+                                 probs = seq(0, 1, length.out = b + 1), na.rm = TRUE)
+    breaks_pctFam2Par <- quantile(c(train_data$PctFam2Par, test_data$PctFam2Par), 
+                                  probs = seq(0, 1, length.out = b + 1), na.rm = TRUE)
+    breaks_pctPopUnderPov <- quantile(c(train_data$PctPopUnderPov, test_data$PctPopUnderPov), 
+                                      probs = seq(0, 1, length.out = b + 1), na.rm = TRUE)
+
+    # Apply the same bins to both training and test sets
+    train_data$PctLess9thGrade_bins <- cut(train_data$PctLess9thGrade, breaks = breaks_pctLess9thGrade, include.lowest = TRUE)
+    test_data$PctLess9thGrade_bins <- cut(test_data$PctLess9thGrade, breaks = breaks_pctLess9thGrade, include.lowest = TRUE)
+
+    train_data$PctUnemployed_bins <- cut(train_data$PctUnemployed, breaks = breaks_pctUnemployed, include.lowest = TRUE)
+    test_data$PctUnemployed_bins <- cut(test_data$PctUnemployed, breaks = breaks_pctUnemployed, include.lowest = TRUE)
+
+    train_data$PctEmploy_bins <- cut(train_data$PctEmploy, breaks = breaks_pctEmploy, include.lowest = TRUE)
+    test_data$PctEmploy_bins <- cut(test_data$PctEmploy, breaks = breaks_pctEmploy, include.lowest = TRUE)
+
+    train_data$perCapInc_bins <- cut(train_data$perCapInc, breaks = breaks_perCapInc, include.lowest = TRUE)
+    test_data$perCapInc_bins <- cut(test_data$perCapInc, breaks = breaks_perCapInc, include.lowest = TRUE)
+
+    train_data$PctFam2Par_bins <- cut(train_data$PctFam2Par, breaks = breaks_pctFam2Par, include.lowest = TRUE)
+    test_data$PctFam2Par_bins <- cut(test_data$PctFam2Par, breaks = breaks_pctFam2Par, include.lowest = TRUE)
+
+    train_data$PctPopUnderPov_bins <- cut(train_data$PctPopUnderPov, breaks = breaks_pctPopUnderPov, include.lowest = TRUE)
+    test_data$PctPopUnderPov_bins <- cut(test_data$PctPopUnderPov, breaks = breaks_pctPopUnderPov, include.lowest = TRUE)
+
+    # Fit OLS model with state (categorical) and binned predictors
+    model <- lm(log_ViolentCrimesPerPop ~ state + 
+                   PctLess9thGrade_bins + 
+                   PctUnemployed_bins + 
+                   PctEmploy_bins + 
+                   perCapInc_bins + 
+                   PctFam2Par_bins + 
+                   PctPopUnderPov_bins, 
+                 data = train_data)
+
+    # Make predictions on the test set
+    predictions <- predict(model, newdata = test_data)
+
+    # Compute Mean Squared Error (MSE)
+    mse <- mean((test_data$log_ViolentCrimesPerPop - predictions)^2, na.rm = TRUE)
+
+    # Store results
+    mse_results <- rbind(mse_results, data.frame(Bins = b, MSE = mse))
+  }
+  
+  return(mse_results)
+}
+
+```
+
+```{r}
+# Define a range of bins to test (e.g., 3 to 10 bins)
+bins_to_test <- seq(3, 10, 1)  # Testing from 3 to 10 bins
+```
+
+```{r}
+# Run cross-validation to find the best number of bins
+mse_results <- find_optimal_bins(bins_to_test, crime_subset, crime_subset_test)
+```
+
+```{r}
+# Plot MSE vs. Number of Bins
+ggplot(mse_results, aes(x = Bins, y = MSE)) + 
+  geom_line() + 
+  geom_point() + 
+  labs(title = "G3.3: Optimal Number of Bins Selection", x = "Number of Bins", y = "MSE")
+
+```
+
+```{r}
+# Improved Plot: MSE vs. Number of Bins
+ggplot(mse_results, aes(x = Bins, y = MSE)) +
+  geom_line(color = "blue", size = 1) +  # Use blue for the line, increase thickness
+  geom_point(color = "red", size = 3) +  # Red points for visibility
+  labs(
+    title = "G3.3: Optimal Number of Bins Selection",
+    x = "Number of Bins",
+    y = "MSE",
+    caption = "This plot shows the relationship between the number of bins and the Mean Squared Error (MSE). 
+               The MSE decreases as the number of bins increases, reaching a minimum around 8-9 bins, 
+               before slightly increasing again. This suggests that selecting around 9 bins may offer an 
+               optimal balance between accuracy and model complexity."
+  ) +
+  theme_minimal(base_size = 11) +  # Apply a clean minimal theme
+  theme(
+    plot.title = element_text(face = "bold", size = 12, hjust = 0.5),  # Bold & center title
+    axis.title = element_text(face = "bold"),  # Make axis labels bold
+    plot.caption = element_text(hjust = 0, size = 10)  # Right-align caption
+  )
+
+
+```
+
+```{r}
+print(mse_results)
+```
+
+
+```{r}
+library(gridExtra)
+```
+
+```{r}
+# Histogram of PctUnemployed before binning
+ggplot(crime_subset, aes(x = PctUnemployed)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.6) +
+  labs(title = "G3.3.1a: PctUnemployed Distribution Before Binning", x = "PctUnemployed", y = "Count")
+
+# Histogram of PctUnemployed after binning
+ggplot(crime_subset, aes(x = PctUnemployed_bins)) +
+  geom_bar(fill = "red", alpha = 0.6) +
+  labs(title = "G3.3.1b: PctUnemployed Distribution After Binning", x = "PctUnemployed Bins", y = "Count")
+
+
+```
+
+```{r}
+# Display bin edges
+quantile(crime_subset$PctUnemployed, probs = seq(0, 1, length.out = 10))
+```
+
+```{r}
+# Set optimal number of bins
+optimal_bins <- 9
+
+# Compute global breakpoints using full dataset
+breaks_pctLess9thGrade <- quantile(c(crime_subset$PctLess9thGrade, crime_subset_test$PctLess9thGrade), 
+                                   probs = seq(0, 1, length.out = optimal_bins + 1), na.rm = TRUE)
+breaks_pctUnemployed <- quantile(c(crime_subset$PctUnemployed, crime_subset_test$PctUnemployed), 
+                                 probs = seq(0, 1, length.out = optimal_bins + 1), na.rm = TRUE)
+breaks_pctEmploy <- quantile(c(crime_subset$PctEmploy, crime_subset_test$PctEmploy), 
+                             probs = seq(0, 1, length.out = optimal_bins + 1), na.rm = TRUE)
+breaks_perCapInc <- quantile(c(crime_subset$perCapInc, crime_subset_test$perCapInc), 
+                             probs = seq(0, 1, length.out = optimal_bins + 1), na.rm = TRUE)
+breaks_pctFam2Par <- quantile(c(crime_subset$PctFam2Par, crime_subset_test$PctFam2Par), 
+                              probs = seq(0, 1, length.out = optimal_bins + 1), na.rm = TRUE)
+breaks_pctPopUnderPov <- quantile(c(crime_subset$PctPopUnderPov, crime_subset_test$PctPopUnderPov), 
+                                  probs = seq(0, 1, length.out = optimal_bins + 1), na.rm = TRUE)
+
+# Apply the same bins to both training and test sets
+crime_subset$PctLess9thGrade_bins <- cut(crime_subset$PctLess9thGrade, breaks = breaks_pctLess9thGrade, include.lowest = TRUE)
+crime_subset_test$PctLess9thGrade_bins <- cut(crime_subset_test$PctLess9thGrade, breaks = breaks_pctLess9thGrade, include.lowest = TRUE)
+
+crime_subset$PctUnemployed_bins <- cut(crime_subset$PctUnemployed, breaks = breaks_pctUnemployed, include.lowest = TRUE)
+crime_subset_test$PctUnemployed_bins <- cut(crime_subset_test$PctUnemployed, breaks = breaks_pctUnemployed, include.lowest = TRUE)
+
+crime_subset$PctEmploy_bins <- cut(crime_subset$PctEmploy, breaks = breaks_pctEmploy, include.lowest = TRUE)
+crime_subset_test$PctEmploy_bins <- cut(crime_subset_test$PctEmploy, breaks = breaks_pctEmploy, include.lowest = TRUE)
+
+crime_subset$perCapInc_bins <- cut(crime_subset$perCapInc, breaks = breaks_perCapInc, include.lowest = TRUE)
+crime_subset_test$perCapInc_bins <- cut(crime_subset_test$perCapInc, breaks = breaks_perCapInc, include.lowest = TRUE)
+
+crime_subset$PctFam2Par_bins <- cut(crime_subset$PctFam2Par, breaks = breaks_pctFam2Par, include.lowest = TRUE)
+crime_subset_test$PctFam2Par_bins <- cut(crime_subset_test$PctFam2Par, breaks = breaks_pctFam2Par, include.lowest = TRUE)
+
+crime_subset$PctPopUnderPov_bins <- cut(crime_subset$PctPopUnderPov, breaks = breaks_pctPopUnderPov, include.lowest = TRUE)
+crime_subset_test$PctPopUnderPov_bins <- cut(crime_subset_test$PctPopUnderPov, breaks = breaks_pctPopUnderPov, include.lowest = TRUE)
+
+```
+
+```{r}
+# Fit final OLS model using optimized binning
+final_step_model <- lm(log_ViolentCrimesPerPop ~ state + 
+                         PctLess9thGrade_bins + 
+                         PctUnemployed_bins + 
+                         PctEmploy_bins + 
+                         perCapInc_bins + 
+                         PctFam2Par_bins + 
+                         PctPopUnderPov_bins, 
+                       data = crime_subset)
+
+# Print model summary
+summary(final_step_model)
+
+# Convert to a table format
+# library(stargazer)
+#stargazer(final_step_model, type = "text")
+```
+
+```{r}
+par(mfrow= c(2,2))
+plot(final_step_model)
+
+# Right-align the title
+mtext("G3.3.2: Log OLS Step FunctionsDiagnostic Plot", outer = TRUE, line = -2, cex.main = 1.5, font = 2)  
+
+```
+```{r}
+# Compute Train MSE
+train_predictions3 <- predict(final_step_model, newdata = crime_subset)  # Predict on training data
+train_mse3 <- mean((crime_subset$log_ViolentCrimesPerPop - train_predictions3)^2)  # MSE formula
+
+# Print Train MSE
+print(train_mse)
+```
+
+```{r}
+# Make predictions on the test dataset
+pred_step <- predict(final_step_model, newdata = crime_subset_test)
+
+# Compute MSE
+mse_step <- mean((crime_subset_test$log_ViolentCrimesPerPop - pred_step)^2, na.rm = TRUE)
+
+# Print final MSE
+print(mse_step)
+```
+
+```{r}
+tab_model(final_step_model)
+```
+
+
+
+## 4. LASSO
+
+Lasso requires:
+Numeric predictors (convert categorical variables to dummy variables).
+Matrix format for glmnet().
+
+```{r, message= FALSE}
+library(glmnet)
+```
+
+### LASSO1
+
+```{r}
+crime_subsetdrop <- crime_subset[, !colnames(crime_subset) %in% "ViolentCrimesPerPop_shifted"]
+```
+
+```{r}
+# Combine training and test datasets before encoding
+full_data <- rbind(crime_subsetdrop, crime_subset_test)
+
+# Generate the model matrix for the full dataset
+full_model_matrix <- model.matrix(ViolentCrimesPerPop ~ state + 
+                                    PctLess9thGrade + 
+                                    PctUnemployed + 
+                                    PctEmploy + 
+                                    perCapInc + 
+                                    PctFam2Par + 
+                                    PctPopUnderPov, 
+                                  data = full_data)[, -1]  # Remove intercept column
+
+# Split into X_train and X_test using row indices
+X_train <- full_model_matrix[1:nrow(crime_subset), ]
+X_test <- full_model_matrix[(nrow(crime_subset) + 1):nrow(full_model_matrix), ]
+
+```
+
+
+```{r}
+
+# Extract response variables
+y_train <- crime_subset$ViolentCrimesPerPop
+y_test <- crime_subset_test$ViolentCrimesPerPop
+
+# Fit Lasso model with cross-validation
+set.seed(123)
+cv_lasso <- cv.glmnet(X_train, y_train, alpha = 1, nfolds = 10)  # Alpha = 1 for Lasso
+best_lambda <- cv_lasso$lambda.min
+
+# Fit final Lasso model
+lasso_model <- glmnet(X_train, y_train, alpha = 1, lambda = best_lambda)
+
+# Make predictions on the test dataset
+predictions_lasso <- predict(lasso_model, s = best_lambda, newx = X_test)
+
+# Compute Mean Squared Error (MSE)
+mse_lasso <- mean((y_test - predictions_lasso)^2)
+
+# Print MSE
+print(mse_lasso)
+
+```
+
+```{r}
+best_lambda
+```
+
+
+```{r}
+# Plot cross-validation errors vs. lambda
+plot(cv_lasso)  
+title("G4.4.1: LASSO 1 Cross-Validation", line = 2)
+
+# Add a vertical line at the optimal lambda
+abline(v = log(cv_lasso$lambda.min), col = "blue", lty = 2)
+```
+
+```{r}
+lasso1_coefficients <- coef(lasso_model)  # Extract coefficients
+selected_vars_lasso1 <- rownames(lasso1_coefficients)[lasso1_coefficients[,1] != 0]  # Get nonzero coefficients
+print(selected_vars_lasso1)
+```
+
+```{r}
+lasso1_coefficients
+```
+
+```{r}
+library(kableExtra)
+```
+
+
+```{r}
+# Extract Lasso coefficients
+lasso_coefs <- coef(lasso_model, s = best_lambda)  # Get coefficients for best lambda
+lasso_df <- as.data.frame(as.matrix(lasso_coefs))  # Convert to dataframe
+colnames(lasso_df) <- c("Coefficient")
+lasso_df$Variable <- rownames(lasso_df)  # Add variable names
+lasso_df <- lasso_df[, c("Variable", "Coefficient")]  # Reorder columns
+```
+
+```{r}
+# Display table nicely
+lasso_df %>%
+  kable(digits = 3, caption = "Lasso Regression Coefficients") %>%
+  kable_styling(full_width = F)
+```
+
+
+### LASSO 2
+
+```{r}
+# Generate the model matrix for the full dataset
+full_model_matrix15 <- model.matrix(log_ViolentCrimesPerPop ~ state + 
+                                    poly(PctLess9thGrade, 2) + 
+                                    poly(PctUnemployed, 2) + 
+                                    poly(PctEmploy, 2) + 
+                                    poly(perCapInc, 3) + 
+                                    poly(PctFam2Par, 3) + 
+                                    PctPopUnderPov, 
+                                  data = full_data)[, -1]  # Remove intercept column
+
+# Split into X_train and X_test using row indices
+X_train15 <- full_model_matrix15[1:nrow(crime_subset), ]
+X_test15 <- full_model_matrix15[(nrow(crime_subset) + 1):nrow(full_model_matrix15), ]
+
+```
+
+```{r}
+
+# Extract response variables
+y_train15 <- crime_subset$log_ViolentCrimesPerPop
+y_test15 <- crime_subset_test$log_ViolentCrimesPerPop
+
+# Fit Lasso model with cross-validation
+set.seed(123)
+cv_lasso15 <- cv.glmnet(X_train15, y_train15, alpha = 1, nfolds = 10)  # Alpha = 1 for Lasso
+best_lambda15 <- cv_lasso15$lambda.min
+
+# Fit final Lasso model
+lasso_model15 <- glmnet(X_train15, y_train15, alpha = 1, lambda = best_lambda15)
+
+# Make predictions on the test dataset
+predictions_lasso15 <- predict(lasso_model15, s = best_lambda2, newx = X_test15)
+
+# Compute Mean Squared Error (MSE)
+mse_lasso15 <- mean((y_test15 - predictions_lasso15)^2)
+
+# Print MSE
+print(mse_lasso15)
+
+```
+
+```{r}
+# Extract Lasso coefficients
+lasso_coefs <- coef(lasso_model15, s = best_lambda15)  # Get coefficients for best lambda
+lasso_df <- as.data.frame(as.matrix(lasso_coefs))  # Convert to dataframe
+colnames(lasso_df) <- c("Coefficient")
+lasso_df$Variable <- rownames(lasso_df)  # Add variable names
+lasso_df <- lasso_df[, c("Variable", "Coefficient")]  # Reorder columns
+```
+
+```{r}
+# Display table nicely
+lasso_df %>%
+  kable(digits = 3, caption = "Lasso Regression Coefficients") %>%
+  kable_styling(full_width = F)
+```
+
+```{r}
+# Train MSE
+
+# Make predictions on the test dataset
+predictions_lassotrain <- predict(lasso_model2, s = best_lambda2, newx = X_train2)
+
+# Compute Mean Squared Error (MSE)
+mse_lassotrain <- mean((y_train2 - predictions_lassotrain)^2)
+
+# Print MSE
+print(mse_lassotrain)
+```
+
+```{r}
+r2_lasso <- 1 - sum((y_train2 - predictions_lassotrain)^2) / sum((y_train2 - mean(y_train2))^2)
+print(r2_lasso)
+```
+
+
+```{r}
+# Plot cross-validation errors vs. lambda
+plot(cv_lasso15)  
+title("G4.4.2: LASSO 2 Cross-Validation", line = 2)
+
+# Add a vertical line at the optimal lambda
+abline(v = log(cv_lasso15$lambda.min), col = "blue", lty = 2)
+```
+
+
+```{r}
+best_lambda15
+```
+
+```{r}
+lasso15_coefficients <- coef(lasso_model15)  # Extract coefficients
+selected_vars_lasso15 <- rownames(lasso15_coefficients)[lasso15_coefficients[,1] != 0]  # Get nonzero coefficients
+print(selected_vars_lasso15)
+```
+
+```{r}
+summary(lasso_model15 )
+```
+
+### LASSO 3
+
+```{r}
+# Combine training and test datasets before encoding
+# full_data <- rbind(crime_subsetdrop, crime_subset_test)
+
+full_model_matrix2 <-model.matrix(log_ViolentCrimesPerPop ~ state + 
+                         PctLess9thGrade_bins + 
+                         PctUnemployed_bins + 
+                         PctEmploy_bins + 
+                         perCapInc_bins + 
+                         PctFam2Par_bins + 
+                         PctPopUnderPov_bins, 
+                       data = full_data)[, -1]
+
+# Split into X_train and X_test using row indices
+X_train2 <- full_model_matrix2[1:nrow(crime_subset), ]
+X_test2 <- full_model_matrix2[(nrow(crime_subset) + 1):nrow(full_model_matrix2), ]
+
+```
+
+```{r}
+
+# Extract response variables
+y_train2 <- crime_subset$log_ViolentCrimesPerPop
+y_test2 <- crime_subset_test$log_ViolentCrimesPerPop
+
+# Fit Lasso model with cross-validation
+set.seed(123)
+cv_lasso2 <- cv.glmnet(X_train2, y_train2, alpha = 1, nfolds = 10)  # Alpha = 1 for Lasso
+best_lambda2 <- cv_lasso2$lambda.min
+
+# Fit final Lasso model
+lasso_model2 <- glmnet(X_train2, y_train2, alpha = 1, lambda = best_lambda2)
+
+# Make predictions on the test dataset
+predictions_lasso2 <- predict(lasso_model2, s = best_lambda2, newx = X_test2)
+
+# Compute Mean Squared Error (MSE)
+mse_lasso2 <- mean((y_test2 - predictions_lasso2)^2)
+
+# Print MSE
+print(mse_lasso2)
+
+```
+
+```{r}
+# Extract Lasso coefficients
+lasso_coefs <- coef(lasso_model2, s = best_lambda2)  # Get coefficients for best lambda
+lasso_df <- as.data.frame(as.matrix(lasso_coefs))  # Convert to dataframe
+colnames(lasso_df) <- c("Coefficient")
+lasso_df$Variable <- rownames(lasso_df)  # Add variable names
+lasso_df <- lasso_df[, c("Variable", "Coefficient")]  # Reorder columns
+```
+
+```{r}
+# Display table nicely
+lasso_df %>%
+  kable(digits = 3, caption = "Lasso Regression Coefficients") %>%
+  kable_styling(full_width = F)
+```
+
+```{r}
+# Plot cross-validation errors vs. lambda
+plot(cv_lasso2)  
+title("G4.4.3: LASSO 3 Cross-Validation", line = 2)
+
+# Add a vertical line at the optimal lambda
+abline(v = log(cv_lasso2$lambda.min), col = "blue", lty = 2)
+```
+
+```{r}
+best_lambda2
+```
+
+```{r}
+lasso2_coefficients <- coef(lasso_model2)  # Extract coefficients
+selected_vars_lasso2 <- rownames(lasso2_coefficients)[lasso2_coefficients[,1] != 0]  # Get nonzero coefficients
+print(selected_vars_lasso2)
+```
+
+```{r}
+lasso2_coefficients
+```
+
+## 5. One of the: Tree method, rand forest, multilayer -- Will dor RandForest
+
+Regression Tree: Simple, interpretable, but prone to overfitting.
+Random Forest: More robust and accurate, reduces overfitting.
+Multilayer Neural Network: Complex, requires more data, less interpretable.
+
+We will work with random forest because: it handles both categorical and continuous variables well (state, employment, income, etc.).
+Reduces overfitting compared to a single decision tree.
+Works well for small to medium-sized datasets.
+Provides feature importance to see which factors contribute most to crime rates.
+
+```{r}
+library(randomForest)
+```
+
+```{r}
+crime_subset$state <- as.factor(crime_subset$state)
+crime_subset_test$state <- as.factor(crime_subset_test$state)
+```
+
+```{r}
+# Define predictors and response variable
+predictors <- c("state", "PctLess9thGrade", "PctUnemployed", 
+                "PctEmploy", "perCapInc", "PctFam2Par", "PctPopUnderPov")
+response <- "ViolentCrimesPerPop"
+
+# Create formula for Random Forest
+rf_formula <- as.formula(paste(response, "~", paste(predictors, collapse = " + ")))
+
+# Define training and testing sets
+X_train_rf <- crime_subset[, predictors]
+y_train_rf <- crime_subset[, response]
+
+X_test_rf <- crime_subset_test[, predictors]
+y_test_rf <- crime_subset_test[, response]
+```
+
+
+```{r}
+# Define a grid of `mtry` values
+tune_grid <- expand.grid(mtry = seq(2, length(predictors), by = 1))
+
+# Train model with cross-validation
+set.seed(123)
+rf_tune_mtry <- train(
+  rf_formula, data = crime_subset, method = "rf",
+  tuneGrid = tune_grid, trControl = trainControl(method = "cv", number = 5)
+)
+
+# Print the best `mtry`
+print(rf_tune_mtry$bestTune)
+
+# Plot performance vs. `mtry`
+plot(rf_tune_mtry, main = "G4.5a: Plot performance vs. mtry" )
+```
+
+The y-axis represents the Root Mean Squared Error (RMSE) from cross-validation.
+The x-axis represents different values of mtry (number of randomly selected predictors per split).
+Key Observations: The error decreases as mtry increases from 2 to ~6.
+After mtry = 6, the error reduction is minimal.
+After trying values between 4-6, mtry = 4 appears to give the highest % var explained
+
+```{r}
+set.seed(123)
+rf_tune_ntree <- randomForest(rf_formula, data = crime_subset, ntree = 1000, mtry = 4, importance = TRUE)
+
+# Plot OOB (Out-of-Bag) error vs. Number of Trees
+plot(rf_tune_ntree, main = "G4.5b: Random Forest Error vs. Number of Trees")
+```
+
+The y-axis represents the Out-of-Bag (OOB) error, a measure of how well the Random Forest model generalizes.
+The x-axis represents the number of trees (ntree) used in the forest.
+Key Observations: The error drops quickly as ntree increases but plateaus around 400 trees.
+After this point, adding more trees does not significantly reduce the error.
+Implications: Using more than ~400 trees does not provide much additional benefit. Keeping ntree = 500 is a reasonable choice, as going beyond this has diminishing returns in error reduction.
+
+When ntree= 1000
+Mean of squared residuals: 0.02032125
+% Var explained: 62.02
+
+When ntree= 700
+Mean of squared residuals: 0.0203897
+% Var explained: 61.9
+
+When ntree=500
+Mean of squared residuals: 0.0205066
+% Var explained: 61.68
+
+So, fitting the random forest: 
+
+```{r}
+# Train Random Forest model
+set.seed(123)  # For reproducibility
+rf_model <- randomForest(rf_formula, data = crime_subset, ntree = 500, mtry = 4, importance = TRUE)
+
+# Print model summary
+print(rf_model)
+
+```
+
+```{r}
+library(rpart)
+library(rpart.plot)
+```
+
+```{r}
+
+# Train a simple decision tree for visualization
+tree_model <- rpart(rf_formula, data = crime_subset, method = "anova")
+
+# Plot the tree
+rpart.plot(tree_model, type = 3, extra = 101, box.palette = "Blues",
+           main = "G4.5.2: Decision Tree for Predicting Violent Crime Rate")
+```
+
+```{r}
+# Plot variable importance
+importance(rf_model)
+varImpPlot(rf_model, main = "G4.5.1: Feature Importance in Random Forest Model")
+
+# Add note below the plot
+mtext("This plot shows the relative importance of each predictor in the Random Forest model. The left panel (%IncMSE) measures the increase in Mean Squared Error when the variable is removed, while the right panel (IncNodePurity) indicates the variable's contribution to decision node purity.", side = 1, line = 5, adj = 0, cex = 0.8)
+
+```
+
+                  
+```{r}
+# Plot variable importance
+importance(rf_model)
+varImpPlot(rf_model, main = "G4.5.1: Feature Importance in Random Forest Model")
+
+```
+
+```{r}
+crime_subset_test$state <- factor(crime_subset_test$state, levels = levels(crime_subset$state))
+```
+
+```{r}
+# Generate predictions on the test set
+rf_predictions <- predict(rf_model, newdata = crime_subset_test)
+```
+
+```{r}
+# Compute Mean Squared Error (MSE)
+mse_rf <- mean((crime_subset_test$ViolentCrimesPerPop - rf_predictions)^2)
+
+# Print MSE
+print(mse_rf)
+```
+
+
+### Predict a value?
+
+```{r}
+# Load necessary libraries
+#library(glmnet)
+
+# Create new data frame with predictor values
+new_data <- data.frame(
+  state = factor(c(25, 25), levels = levels(crime_subset$state)), # Ensure factor levels match training data
+  PctLess9thGrade = c(0.27, 0.1),
+  PctBSorMore = c(0.30, 0.86),  # Not used in model, but keeping for reference
+  PctUnemployed = c(0.30, 0.21),
+  PctEmploy = c(0.52, 0.61),
+  perCapInc = c(0.31, 0.73),
+  PctFam2Par = c(0.64, 0.87),
+  PctPopUnderPov = c(0.20, 0.06)
+)
+
+# Apply the same polynomial transformation as in training
+new_data_transformed <- model.matrix(~ poly(PctLess9thGrade, 2, raw = TRUE) +
+                                       poly(PctUnemployed, 2, raw = TRUE) +
+                                       poly(PctEmploy, 2, raw = TRUE) +
+                                       poly(perCapInc, 3, raw = TRUE) +
+                                       poly(PctFam2Par, 3, raw = TRUE) +
+                                       PctPopUnderPov + state, 
+                                     data = new_data)[, -1]  # Remove intercept column
+
+
+```
+
+-0.0807823785state
+poly(PctLess9thGrade, 2)1  0.7428985338
+poly(PctLess9thGrade, 2)2 -0.1265258798
+poly(PctUnemployed, 2)1    1.1595495289
+poly(PctUnemployed, 2)2   -0.1514569242
+poly(PctEmploy, 2)1        1.2280600629
+poly(PctEmploy, 2)2       -0.6670050867
+poly(perCapInc, 3)1        0.4655514379
+poly(perCapInc, 3)2       -0.5061754711
+poly(perCapInc, 3)3        0.4156127553
+poly(PctFam2Par, 3)1      -4.5008775087
+poly(PctFam2Par, 3)2       1.4522957347
+poly(PctFam2Par, 3)3       0.3767044321
+PctPopUnderPov             0.0660791031
+
+
+ (-0.0807823785*1)+ (0.7428985338*0.27)+
+  (-0.1265258798*0.0729) + (1.1595495289*0.30)+
+  (-0.1514569242*0.0900)+ (1.2280600629*0.52) +
+ (-0.6670050867*0.2704)+
+  (0.4655514379*0.31)+
+  (-0.5061754711*0.0961)+
+  (0.4156127553*0.029791)+
+  (-4.5008775087*0.64)+
+  (1.4522957347*0.4096)+
+  (0.3767044321*0.262144)+
+  (0.0660791031*0.20)
+
+```{r}
+#For Obs 1
+(-0.0807823785*1)+ (0.7428985338*0.27)+
+  (-0.1265258798*0.0729) + (1.1595495289*0.30)+
+  (-0.1514569242*0.0900)+ (1.2280600629*0.52) +
+ (-0.6670050867*0.2704)+
+  (0.4655514379*0.31)+
+  (-0.5061754711*0.0961)+
+  (0.4156127553*0.029791)+
+  (-4.5008775087*0.64)+
+  (1.4522957347*0.4096)+
+  (0.3767044321*0.262144)+
+  (0.0660791031*0.20)
+```
+
+```{r}
+exp(-1.162632)
+```
+
+
+```{r}
+#For Obs 2
+(-0.0807823785*1)+ (0.7428985338*0.10)+
+  (-0.1265258798*0.0100) + (1.1595495289*0.21)+
+  (-0.1514569242*0.0441)+ (1.2280600629*0.61) +
+ (-0.6670050867*0.3721)+
+  (0.4655514379*0.73)+
+  (-0.5061754711*0.5329)+
+  (0.4156127553*0.389017)+
+  (-4.5008775087*0.87)+
+  (1.4522957347*0.7569)+
+  (0.3767044321*0.658503)+
+  (0.0660791031*0.06)
+```
+
+```{r}
+exp(-1.602711)
+```
