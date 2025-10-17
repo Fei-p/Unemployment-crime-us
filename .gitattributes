@@ -1,0 +1,10 @@
+# Count R and R Markdown as R
+*.R      linguist-language=R
+*.Rmd    linguist-language=R
+*.qmd    linguist-language=R  # if you use Quarto
+
+# De-emphasize generated/report files
+docs/**              linguist-documentation
+*.html               linguist-documentation
+*_files/**           linguist-generated   # Rmd/Quarto assets
+*_cache/**           linguist-generated
